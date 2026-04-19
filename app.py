@@ -96,10 +96,28 @@ st.markdown(f"""
         background: rgba(255, 255, 255, 0.98) !important;
     }}
 
+    #MainMenu,
     [data-testid="stToolbar"] {{
-        background: rgba(255, 255, 255, 0.98) !important;
-        color: var(--amdalens-text) !important;
-        right: 0.75rem !important;
+        display: none !important;
+        visibility: hidden !important;
+    }}
+
+    [data-testid="stToolbarActions"],
+    [data-testid="stStatusWidget"],
+    [data-testid="manage-app-button"],
+    [data-testid="stDeployButton"],
+    [data-testid="baseButton-headerNoPadding"],
+    a[href*="share.streamlit.io"],
+    button[title="View app source"],
+    button[title="Edit app"],
+    button[title="Deploy"],
+    button[title="Share"],
+    button[aria-label="View app source"],
+    button[aria-label="Edit app"],
+    button[aria-label="Deploy"],
+    button[aria-label="Share"] {{
+        display: none !important;
+        visibility: hidden !important;
     }}
 
     [data-testid="stToolbar"] *,
