@@ -85,7 +85,37 @@ st.markdown(f"""
     }}
 
     [data-testid="stHeader"] {{
+        background: rgba(255, 255, 255, 0.98) !important;
         border-bottom: 1px solid var(--amdalens-border);
+        box-shadow: 0 2px 12px rgba(31, 78, 121, 0.08);
+        color: var(--amdalens-text) !important;
+    }}
+
+    header[data-testid="stHeader"],
+    header[data-testid="stHeader"] > div {{
+        background: rgba(255, 255, 255, 0.98) !important;
+    }}
+
+    [data-testid="stToolbar"] {{
+        background: rgba(255, 255, 255, 0.98) !important;
+        color: var(--amdalens-text) !important;
+        right: 0.75rem !important;
+    }}
+
+    [data-testid="stToolbar"] *,
+    [data-testid="stToolbar"] button,
+    [data-testid="stToolbar"] svg,
+    header[data-testid="stHeader"] *,
+    header[data-testid="stHeader"] button,
+    header[data-testid="stHeader"] svg {{
+        color: var(--amdalens-text) !important;
+        fill: var(--amdalens-text) !important;
+        stroke: var(--amdalens-text) !important;
+    }}
+
+    [data-testid="stDecoration"] {{
+        background: linear-gradient(90deg, #B00020 0%, #1F4E79 50%, #C77700 100%) !important;
+        height: 3px !important;
     }}
 
     .main .block-container {{
