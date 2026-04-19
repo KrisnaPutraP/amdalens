@@ -1,1 +1,15 @@
 venv/
+__pycache__/
+*.py[cod]
+
+# Local Streamlit secrets and Google service-account keys.
+.streamlit/secrets.toml
+*.private-key.json
+*service-account*.json
+*service_account*.json
+*gee*.json
+
+# Local/editor noise.
+.env
+.DS_Store
+Thumbs.db
