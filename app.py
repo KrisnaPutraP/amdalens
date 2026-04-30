@@ -34,6 +34,7 @@ SURFACE = "#FFFFFF"
 SURFACE_ALT = "#F1F6FA"
 BORDER = "#D7E0EA"
 SHADOW = "0 10px 26px rgba(31, 78, 121, 0.08)"
+LOGO_PATH = Path("assets") / "amdalens-logo.jpeg"
 
 
 def apply_plot_style(fig):
@@ -59,7 +60,7 @@ def apply_plot_style(fig):
 # ============ PAGE CONFIG ============
 st.set_page_config(
     page_title=f"{APP_TITLE} - AMDAL Intelligence Layer",
-    page_icon="A",
+    page_icon=str(LOGO_PATH),
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -187,23 +188,6 @@ st.markdown(f"""
         color: var(--amdalens-muted);
         font-size: 0.98rem;
         margin-top: 0.25rem;
-    }}
-
-    .brand-mark {{
-        align-items: center;
-        background: linear-gradient(135deg, #0B4F6C 0%, #2E75B6 100%);
-        border: 1px solid #94B8D8;
-        border-radius: 8px;
-        box-shadow: var(--amdalens-shadow);
-        color: #FFFFFF;
-        display: flex;
-        font-size: 1.25rem;
-        font-weight: 800;
-        height: 4.2rem;
-        justify-content: center;
-        letter-spacing: 0;
-        margin: 0.1rem auto 0;
-        width: 4.2rem;
     }}
 
     .score-card {{
@@ -555,7 +539,7 @@ def init_gee():
 # ============ HEADER ============
 col_logo, col_title = st.columns([1, 6])
 with col_logo:
-    st.markdown("<div class='brand-mark'>AL</div>", unsafe_allow_html=True)
+    st.image(str(LOGO_PATH), width=130)
 with col_title:
     st.markdown(f"<div class='main-title'>{APP_TITLE}</div>", unsafe_allow_html=True)
     st.markdown(f"<div class='subtitle'>{APP_SUBTITLE}</div>", unsafe_allow_html=True)
