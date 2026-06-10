@@ -43,28 +43,38 @@ MOROWALI_META = {
     )
 }
 
-# Alternatif: polygon kecil di area yang lebih terjaga (untuk perbandingan low-risk)
+# Polygon pembanding low-risk: hutan stabil ~8 km di barat kawasan industri IMIP,
+# masih di Kec. Bahodopi. Kontras "satu kecamatan, dua nasib": inti industri
+# (KRITIS) vs hutan tetangga yang masih utuh (AMAN). Tutupan hutan stabil, datar,
+# jauh dari air permanen & kawasan lindung formal -> benchmark risiko rendah.
 REFERENCE_FOREST_POLYGON = {
     "type": "Polygon",
     "coordinates": [[
-        [121.480, -1.880],
-        [121.510, -1.880],
-        [121.510, -1.910],
-        [121.480, -1.910],
-        [121.480, -1.880],
+        [122.062, -2.826],
+        [122.090, -2.828],
+        [122.094, -2.848],
+        [122.072, -2.858],
+        [122.058, -2.846],
+        [122.062, -2.826],
     ]]
 }
 
 REFERENCE_FOREST_META = {
-    "name": "Reference Polygon - Forest Area",
+    "name": "Reference - Hutan Stabil Bahodopi Barat",
     "province": "Sulawesi Tengah",
-    "district": "Kabupaten Morowali Utara",
-    "subdistrict": "(area hutan referensi)",
-    "proj_type_hypothesis": "Area hutan (kontrol / benchmark low-risk)",
-    "center_lat": -1.895,
-    "center_lon": 121.495,
-    "approx_area_km2": 10.0,
-    "note": "Digunakan sebagai pembanding: polygon di area yang masih berupa hutan."
+    "district": "Kabupaten Morowali",
+    "subdistrict": "Kecamatan Bahodopi (barat)",
+    "proj_type_hypothesis": "Hutan stabil (benchmark risiko rendah)",
+    "center_lat": -2.842,
+    "center_lon": 122.076,
+    "approx_area_km2": 8.0,
+    "note": (
+        "Pembanding low-risk: hutan yang masih utuh ~8 km di barat kawasan "
+        "industri nikel IMIP, masih dalam Kec. Bahodopi. Tutupan hutan stabil "
+        "2019-2025, topografi relatif datar, jauh dari air permanen dan kawasan "
+        "lindung formal. Menunjukkan skor risiko AMDALens memang membedakan "
+        "area aman dari area kritis, bukan selalu menilai tinggi."
+    )
 }
 
 

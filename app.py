@@ -16,15 +16,12 @@ from pathlib import Path
 from config import (
     APP_TITLE, APP_SUBTITLE, APP_TAGLINE,
     COLOR_PRIMARY, COLOR_ACCENT, COLOR_SUCCESS, COLOR_WARNING, COLOR_DANGER,
-    COLOR_MUTED, COLOR_SOFT, WEIGHTS, DW_CLASSES, DW_COLORS,
+    COLOR_MUTED, WEIGHTS,
     BASELINE_YEAR, CURRENT_YEAR, DISCLAIMER,
 )
-from sample_polygons import get_demo_polygon, MOROWALI_META, REFERENCE_FOREST_META
-from risk_engine import (
-    compute_total_score, driver_narrative,
-    mock_score_morowali, mock_score_reference,
-    score_ipth, score_ikh, score_isr, score_ikkl, score_isb,
-)
+from sample_polygons import get_demo_polygon
+from risk_engine import driver_narrative
+from data_provider import get_baseline
 
 # ============ UI THEME ============
 TEXT_COLOR = "#17202A"
@@ -55,6 +52,96 @@ def apply_plot_style(fig):
         yaxis=axis_style,
     )
     return fig
+
+
+# ============ DATA HELPERS (real baseline -> UI) ============
+def lc_get(baseline, name):
+    """Percent for a Dynamic World class in the current-year landcover."""
+    return float((baseline.get("landcover") or {}).get(name, 0.0))
+
+
+def lc_base_get(baseline, name):
+    """Percent for a class in the baseline-year landcover."""
+    return float((baseline.get("landcover_baseline") or {}).get(name, 0.0))
+
+
+def lc_delta(baseline, name):
+    """Current - baseline percentage-point change for a class."""
+    return round(lc_get(baseline, name) - lc_base_get(baseline, name), 1)
+
+
+def fmt_delta_pp(d, baseline_year=None):
+    """Format a percentage-point delta vs the baseline year for st.metric."""
+    yr = baseline_year if baseline_year is not None else BASELINE_YEAR
+    sign = "+" if d > 0 else ""
+    return f"{sign}{d:.1f} poin vs {yr}"
+
+
+def parse_uploaded_geometry(uploaded_file):
+    """
+    Parse an uploaded GeoJSON / KML / SHP(.zip) into (geojson_geom, meta) in
+    EPSG:4326. Multiple/feature geometries are dissolved into one polygon.
+    Raises ValueError on anything that isn't a usable polygon.
+    """
+    import json as _json
+    from shapely.geometry import shape, mapping
+    from shapely.ops import unary_union
+
+    name = uploaded_file.name.lower()
+    raw = uploaded_file.getvalue()
+    geoms = []
+
+    if name.endswith((".geojson", ".json")):
+        gj = _json.loads(raw.decode("utf-8"))
+        gtype = gj.get("type")
+        if gtype == "FeatureCollection":
+            geoms = [shape(f["geometry"]) for f in gj.get("features", [])
+                     if f.get("geometry")]
+        elif gtype == "Feature":
+            geoms = [shape(gj["geometry"])]
+        elif gtype in ("Polygon", "MultiPolygon", "GeometryCollection"):
+            geoms = [shape(gj)]
+    else:
+        # SHP packaged as .zip, or .kml -> read via geopandas/fiona.
+        import os
+        import tempfile
+        import geopandas as gpd
+        suffix = ".zip" if name.endswith(".zip") else os.path.splitext(name)[1]
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(raw)
+            path = tmp.name
+        try:
+            read_path = f"zip://{path}" if name.endswith(".zip") else path
+            gdf = gpd.read_file(read_path)
+            if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
+                gdf = gdf.to_crs(4326)
+            geoms = [g for g in gdf.geometry if g is not None]
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    if not geoms:
+        raise ValueError("Tidak ada geometri ditemukan dalam file.")
+
+    g = unary_union(geoms)
+    if not g.is_valid:
+        g = g.buffer(0)  # fix self-intersections / topology
+    if g.geom_type not in ("Polygon", "MultiPolygon"):
+        raise ValueError(f"Geometri bukan polygon (tipe: {g.geom_type}).")
+
+    c = g.centroid
+    meta = {
+        "name": f"Upload: {uploaded_file.name}",
+        "province": "—", "district": "—", "subdistrict": "—",
+        "proj_type_hypothesis": "Polygon diunggah pengguna",
+        "center_lat": round(c.y, 4), "center_lon": round(c.x, 4),
+        "approx_area_km2": None,
+        "note": ("Polygon diunggah pengguna, dianalisis langsung (live) via "
+                 "Google Earth Engine."),
+    }
+    return mapping(g), meta
 
 
 # ============ PAGE CONFIG ============
@@ -509,28 +596,42 @@ st.markdown(f"""
 
 
 # ============ GEE INITIALIZATION ============
+def _load_service_account():
+    """
+    Service-account dict from st.secrets, falling back to a direct BOM-safe read
+    of .streamlit/secrets.toml (Streamlit's own toml loader chokes on a BOM).
+    """
+    try:
+        if "gee_service_account" in st.secrets:
+            return dict(st.secrets["gee_service_account"])
+    except Exception:
+        pass
+    local = Path.cwd() / ".streamlit" / "secrets.toml"
+    if local.exists():
+        try:
+            import tomllib
+            data = tomllib.loads(local.read_text(encoding="utf-8-sig"))
+            return data.get("gee_service_account")
+        except Exception:
+            return None
+    return None
+
+
 @st.cache_resource
 def init_gee():
-    """Initialize Earth Engine. Falls back to mock mode if unavailable."""
+    """Initialize Earth Engine from the service account. Returns (ok, error)."""
     try:
         import ee
-        local_secrets = Path.cwd() / ".streamlit" / "secrets.toml"
-        user_secrets = Path.home() / ".streamlit" / "secrets.toml"
-        has_secrets_file = local_secrets.exists() or user_secrets.exists()
-
-        # Try credential from st.secrets first
-        if has_secrets_file and "gee_service_account" in st.secrets:
-            import json
-            sa_info = dict(st.secrets["gee_service_account"])
+        import json
+        sa_info = _load_service_account()
+        if sa_info:
             credentials = ee.ServiceAccountCredentials(
                 email=sa_info["client_email"],
-                key_data=json.dumps(sa_info)
+                key_data=json.dumps(sa_info),
             )
             ee.Initialize(credentials, project=sa_info.get("project_id"))
         else:
-            # Try local authentication
-            project_id = st.secrets.get("gee_project_id", None) if has_secrets_file else None
-            ee.Initialize(project=project_id)
+            ee.Initialize()  # local `earthengine authenticate` fallback
         return True, None
     except Exception as e:
         return False, str(e)
@@ -553,44 +654,38 @@ with st.sidebar:
     st.markdown("### Pilih Area Analisis")
 
     polygon_choice = st.radio(
-        "Polygon Demo",
-        options=["Morowali (Demo KRITIS)", "Reference Area (Demo AMAN)", "Upload Sendiri"],
+        "Area",
+        options=["Morowali (Demo KRITIS)", "Reference Area (Demo AMAN)",
+                 "Upload Polygon Sendiri"],
         index=0,
-        help="Untuk hackathon, gunakan polygon dummy. Upload file akan tersedia di versi berikutnya."
+        help="Pilih polygon demo, atau unggah polygon proyek Anda untuk dianalisis live.",
     )
+
+    uploaded_file = None
+    if "Upload" in polygon_choice:
+        uploaded_file = st.file_uploader(
+            "Unggah polygon (GeoJSON / KML / SHP .zip)",
+            type=["geojson", "json", "kml", "zip"],
+            help="Batas lokasi proyek (IUP/HGU/IPPKH). Dihitung live via Google Earth Engine.",
+        )
 
     st.markdown("---")
     st.markdown("### Mode Komputasi")
 
     use_live_gee = st.checkbox(
-        "Gunakan Google Earth Engine (live)",
+        "Live Google Earth Engine",
         value=False,
-        help="Aktifkan untuk query GEE sungguhan. Perlu authentikasi service account."
+        help=("ON: hitung ulang real-time dari satelit (butuh internet). "
+              "OFF: pakai hasil satelit yang sudah dihitung (instan) untuk polygon demo."),
     )
 
-    if use_live_gee:
-        if "gee_ready" not in st.session_state:
-            ok, err = init_gee()
-            st.session_state.gee_ready = ok
-            st.session_state.gee_error = err
-
-        if not st.session_state.gee_ready:
-            st.error(f"GEE tidak tersedia: {st.session_state.gee_error}")
-            st.info("Jalankan di mode demo (precomputed) untuk sekarang.")
-            use_live_gee = False
-
-    st.session_state.use_live_gee = use_live_gee
-
-    if not use_live_gee:
-        st.info("**Mode Demo:** menggunakan hasil precomputed untuk kecepatan rekaman video.")
-
     st.markdown("---")
-    st.markdown("### Bobot Skor Risiko")
+    st.markdown("### Skor Risiko Dampak Lingkungan")
     with st.expander("Lihat formula", expanded=True):
         st.markdown(
             """
             <div class="formula-box">
-                <div class="formula-title">Skor Risiko = jumlah kontribusi tertimbang</div>
+                <div class="formula-title">Skor tertimbang 5 sub-indeks</div>
                 <div class="formula-row">
                     <span class="formula-weight">0.30 x IPTH</span>
                     <span class="formula-name">Perubahan Tutupan Hutan</span>
@@ -615,10 +710,22 @@ with st.sidebar:
             """,
             unsafe_allow_html=True,
         )
+        st.caption(
+            "Skor akhir = nilai tertinggi antara skor tertimbang dan **skor "
+            "dampak terealisasi** (konversi lahan + kehilangan hutan), agar "
+            "lahan yang sudah rusak parah tidak ter-dilusi faktor lokasi."
+        )
 
     st.markdown("---")
     st.caption("Indonesia Aerospace Hackathon 2026")
-    st.caption("Proposal: AMDALens v0.1 MVP")
+    st.caption("AMDALens v0.2 MVP")
+
+
+# ============ RESOLVE GEE READINESS (only when actually needed) ============
+need_gee = use_live_gee or ("Upload" in polygon_choice and uploaded_file is not None)
+gee_ready, gee_error = (False, None)
+if need_gee:
+    gee_ready, gee_error = init_gee()
 
 
 # ============ POLYGON SELECTION ============
@@ -629,9 +736,51 @@ elif "Reference" in polygon_choice:
     geom_geojson, meta = get_demo_polygon("reference")
     demo_key = "reference"
 else:
-    st.warning("Upload polygon akan tersedia di versi berikutnya. Silakan pilih polygon demo di sidebar.")
-    geom_geojson, meta = get_demo_polygon("morowali")
-    demo_key = "morowali"
+    if uploaded_file is None:
+        st.info("Unggah file polygon (GeoJSON / KML / SHP .zip) di sidebar untuk "
+                "memulai, atau pilih salah satu polygon demo.")
+        st.stop()
+    try:
+        geom_geojson, meta = parse_uploaded_geometry(uploaded_file)
+        demo_key = "custom"
+    except Exception as e:
+        st.error(f"Gagal membaca polygon dari file: {e}")
+        st.stop()
+
+
+# ============ FETCH REAL BASELINE (precomputed by default, live on demand) ============
+is_live = use_live_gee or demo_key == "custom"
+if is_live and not gee_ready:
+    if demo_key == "custom":
+        st.error(f"Polygon upload memerlukan Google Earth Engine, namun GEE tidak "
+                 f"tersedia: {gee_error}")
+        st.info("Coba lagi saat ada koneksi internet, atau pilih polygon demo "
+                "(hasil precomputed, tanpa internet).")
+        st.stop()
+    st.sidebar.warning("GEE live tidak tersedia — memakai hasil precomputed.")
+    is_live = False
+
+try:
+    if is_live:
+        with st.spinner("Menghitung baseline lingkungan dari citra satelit..."):
+            baseline = get_baseline(demo_key, geom_geojson, meta, live=True)
+    else:
+        baseline = get_baseline(demo_key, geom_geojson, meta, live=False)
+except Exception as e:
+    if demo_key in ("morowali", "reference"):
+        baseline = get_baseline(demo_key)  # precomputed safety net
+        st.sidebar.warning("GEE gagal — memakai hasil precomputed.")
+    else:
+        st.error(f"Gagal menghitung baseline dari satelit: {e}")
+        st.stop()
+
+# Use the baseline's own metadata (keeps display consistent with what was scored).
+meta = baseline.get("meta", meta) or meta
+data_source = baseline.get("source", "precomputed")
+st.sidebar.caption(
+    ("🟢 Sumber data: **live GEE** (real-time)" if data_source == "live"
+     else "🔵 Sumber data: **precomputed** (hasil satelit nyata, instan)")
+)
 
 
 # ============ TABS: 4 FITUR UTAMA + 1 BONUS ============
@@ -650,10 +799,14 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 with tab1:
     st.markdown("## Area Proyek")
     st.markdown(
-        "Langkah pertama: pemrakarsa mengunggah polygon lokasi proyek "
-        "(IUP, HGU, IPPKH, atau KLHS). Untuk demo ini, kami gunakan polygon "
-        "ilustratif di area yang telah terdokumentasi publik."
+        "Pemrakarsa mengunggah polygon lokasi proyek (IUP, HGU, IPPKH, atau "
+        "KLHS). Sistem memvalidasi topologi, menghitung luas, lalu menjalankan "
+        "pipeline satelit. Pilih polygon demo atau unggah polygon Anda di sidebar."
     )
+
+    poly_color = (COLOR_DANGER if demo_key == "morowali"
+                  else COLOR_SUCCESS if demo_key == "reference" else COLOR_ACCENT)
+    area_km2 = baseline.get("area_km2") or meta.get("approx_area_km2")
 
     col1, col2 = st.columns([2, 1])
 
@@ -673,11 +826,8 @@ with tab1:
         folium.GeoJson(
             geom_geojson,
             name="Area Proyek",
-            style_function=lambda x: {
-                "color": COLOR_DANGER if demo_key == "morowali" else COLOR_SUCCESS,
-                "weight": 3,
-                "fillColor": COLOR_DANGER if demo_key == "morowali" else COLOR_SUCCESS,
-                "fillOpacity": 0.2,
+            style_function=lambda x, _c=poly_color: {
+                "color": _c, "weight": 3, "fillColor": _c, "fillOpacity": 0.2,
             },
             tooltip=meta["name"],
         ).add_to(m)
@@ -692,7 +842,8 @@ with tab1:
         st.markdown(f"**Kabupaten:** {meta['district']}")
         st.markdown(f"**Kecamatan:** {meta['subdistrict']}")
         st.markdown(f"**Tipe Proyek (hipotesis):** {meta['proj_type_hypothesis']}")
-        st.markdown(f"**Luas Estimasi:** {meta['approx_area_km2']} km²")
+        st.markdown(f"**Luas (dihitung satelit):** "
+                    f"{area_km2:.1f} km²" if area_km2 else "**Luas:** —")
         st.markdown(f"**Centroid:** {meta['center_lat']:.3f}, {meta['center_lon']:.3f}")
 
         st.markdown(f"<div class='info-box'>{meta['note']}</div>", unsafe_allow_html=True)
@@ -712,48 +863,31 @@ with tab2:
         "waktu 2 sampai 4 minggu."
     )
 
-    # ============ LAND COVER CLASSIFICATION (Dynamic World) ============
-    st.markdown("### Klasifikasi Tutupan Lahan (Dynamic World, 10 m)")
+    yr_cur = baseline.get("year_current", CURRENT_YEAR)
+    yr_base = baseline.get("year_baseline", BASELINE_YEAR)
 
-    # Mock data for demo (based on Morowali context: mixed but changed area)
-    if demo_key == "morowali":
-        lc_data = {
-            "Trees": 38.5,
-            "Shrub & Scrub": 22.3,
-            "Bare ground": 18.7,
-            "Built area": 9.8,
-            "Crops": 5.2,
-            "Grass": 3.5,
-            "Water": 1.5,
-            "Flooded vegetation": 0.5,
-        }
-    else:  # reference forest
-        lc_data = {
-            "Trees": 89.2,
-            "Shrub & Scrub": 6.8,
-            "Grass": 2.1,
-            "Water": 1.3,
-            "Flooded vegetation": 0.4,
-            "Bare ground": 0.2,
-        }
+    # ============ LAND COVER CLASSIFICATION (Dynamic World) ============
+    st.markdown(f"### Klasifikasi Tutupan Lahan {yr_cur} (Dynamic World, 10 m)")
+
+    lc_data = baseline.get("landcover", {})
 
     col_chart, col_stats = st.columns([2, 1])
     with col_chart:
         df_lc = pd.DataFrame({
             "Kelas": list(lc_data.keys()),
-            "Persentase": list(lc_data.values()),
+            "Persentase": [round(v, 1) for v in lc_data.values()],
         })
         # Color map matching DW classes
         class_color_map = {
             "Water": "#419BDF", "Trees": "#397D49", "Grass": "#88B053",
             "Flooded vegetation": "#7A87C6", "Crops": "#E49635",
             "Shrub & Scrub": "#DFC35A", "Built area": "#C4281B",
-            "Bare ground": "#A59B8F",
+            "Bare ground": "#A59B8F", "Snow & Ice": "#B39FE1",
         }
         fig = px.bar(
             df_lc, x="Persentase", y="Kelas", orientation="h",
             color="Kelas", color_discrete_map=class_color_map,
-            text=df_lc["Persentase"].apply(lambda x: f"{x}%"),
+            text=df_lc["Persentase"].apply(lambda v: f"{v}%"),
         )
         fig.update_layout(
             showlegend=False, height=350,
@@ -766,15 +900,16 @@ with tab2:
         st.plotly_chart(fig, use_container_width=True)
 
     with col_stats:
-        st.markdown("**Ringkasan**")
-        if demo_key == "morowali":
-            st.metric("Tree Cover", f"{lc_data['Trees']}%", "-12% vs 2019", delta_color="inverse")
-            st.metric("Built Area", f"{lc_data['Built area']}%", "+7% vs 2019")
-            st.metric("Bare Ground", f"{lc_data['Bare ground']}%", "+11% vs 2019", delta_color="inverse")
-        else:
-            st.metric("Tree Cover", f"{lc_data['Trees']}%", "stabil vs 2019")
-            st.metric("Water", f"{lc_data['Water']}%")
-            st.metric("Bare Ground", f"{lc_data['Bare ground']}%", "stabil")
+        st.markdown(f"**Perubahan {yr_base} → {yr_cur}**")
+        # Tree loss is bad (delta default: negative=red); built/bare gain is bad (inverse).
+        st.metric("Tree Cover", f"{lc_get(baseline, 'Trees'):.1f}%",
+                  fmt_delta_pp(lc_delta(baseline, "Trees"), yr_base))
+        st.metric("Built Area", f"{lc_get(baseline, 'Built area'):.1f}%",
+                  fmt_delta_pp(lc_delta(baseline, "Built area"), yr_base),
+                  delta_color="inverse")
+        st.metric("Bare Ground", f"{lc_get(baseline, 'Bare ground'):.1f}%",
+                  fmt_delta_pp(lc_delta(baseline, "Bare ground"), yr_base),
+                  delta_color="inverse")
 
     st.caption("Sumber: Google/WRI Dynamic World V1 (klasifikasi 10 m, near real-time)")
 
@@ -783,34 +918,38 @@ with tab2:
     # ============ TOPOGRAPHY (SRTM) ============
     st.markdown("### Topografi dan Kemiringan Lereng (SRTM DEM 30 m)")
 
-    if demo_key == "morowali":
-        slope_mean, slope_max, steep_pct = 18.3, 52.7, 22.1
-    else:
-        slope_mean, slope_max, steep_pct = 25.1, 48.0, 29.5
+    slope = baseline.get("slope", {})
+    slope_mean = slope.get("mean_slope_deg", 0) or 0
+    slope_max = slope.get("max_slope_deg", 0) or 0
+    steep_pct = slope.get("steep_pct", 0) or 0
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Kemiringan Rata-rata", f"{slope_mean}°")
-    c2.metric("Kemiringan Maksimum", f"{slope_max}°")
-    c3.metric("Area Curam (>30°)", f"{steep_pct}%",
+    c1.metric("Kemiringan Rata-rata", f"{slope_mean:.1f}°")
+    c2.metric("Kemiringan Maksimum", f"{slope_max:.1f}°")
+    c3.metric("Area Curam (>30°)", f"{steep_pct:.1f}%",
               help="Per Pedoman KLHK, kemiringan >30° masuk kategori sangat curam")
 
-    st.caption("Sumber: NASA SRTM DEM v4 (30 m global elevation)")
+    st.caption("Sumber: NASA SRTM DEM (30 m global elevation)")
 
     st.markdown("---")
 
     # ============ HIDROLOGI ============
     st.markdown("### Analisis Hidrologi (JRC Global Surface Water)")
 
-    if demo_key == "morowali":
-        water_pct, near_river = 0.8, True
-        river_note = "Polygon berbatasan dengan sungai permanen (jarak <500 m dari tepi)"
+    water = baseline.get("water", {})
+    water_pct = water.get("water_within_polygon_pct", 0) or 0
+    near_river = bool(water.get("near_river", False))
+    nearest_m = water.get("nearest_water_m")
+    if nearest_m is None:
+        river_note = "Tidak ada badan air permanen dalam radius 2 km dari polygon."
+    elif nearest_m <= 1:
+        river_note = "Terdapat badan air permanen DI DALAM polygon (paparan langsung)."
     else:
-        water_pct, near_river = 1.3, False
-        river_note = "Terdapat sungai kecil dalam polygon, tidak ada aliran utama"
+        river_note = f"Badan air permanen terdekat ~{nearest_m:.0f} m dari polygon."
 
     c1, c2 = st.columns(2)
-    c1.metric("Badan Air Permanen dalam Polygon", f"{water_pct}%")
-    c2.metric("Kedekatan Sungai Utama", "Dekat" if near_river else "Tidak dekat",
+    c1.metric("Badan Air Permanen dalam Polygon", f"{water_pct:.2f}%")
+    c2.metric("Kedekatan Air Permanen", "Dekat (<500 m)" if near_river else "Jauh",
               delta="HIGH RISK" if near_river else None,
               delta_color="inverse" if near_river else "off")
     st.caption(f"Catatan: {river_note}")
@@ -821,19 +960,27 @@ with tab2:
     # ============ KEDEKATAN KAWASAN LINDUNG ============
     st.markdown("### Kedekatan ke Kawasan Lindung")
 
-    if demo_key == "morowali":
-        dist_km, overlap = 3.2, False
+    prot = baseline.get("protected", {})
+    dist_km = prot.get("distance_km")
+    overlap = bool(prot.get("overlap", False))
+    if overlap:
+        dist_label, dist_delta, dist_color = "Beririsan", "KRITIS", "inverse"
+    elif dist_km is None:
+        dist_label, dist_delta, dist_color = "> 30 km", "jauh", "off"
     else:
-        dist_km, overlap = 8.5, False
+        dist_label = f"{dist_km:.1f} km"
+        near = dist_km < 5
+        dist_delta = "<5 km" if near else ">5 km"
+        dist_color = "inverse" if near else "off"
 
     c1, c2 = st.columns(2)
-    c1.metric("Jarak ke Kawasan Lindung Terdekat", f"{dist_km} km",
-              delta="<5 km" if dist_km < 5 else ">5 km",
-              delta_color="inverse" if dist_km < 5 else "off")
+    c1.metric("Jarak ke Kawasan Lindung Terdekat (WDPA)", dist_label,
+              delta=dist_delta, delta_color=dist_color)
     c2.metric("Overlap dengan Kawasan Lindung", "Ya" if overlap else "Tidak",
-              delta="KRITIS" if overlap else "Aman",
+              delta="KRITIS" if overlap else "Tidak overlap",
               delta_color="inverse" if overlap else "normal")
-    st.caption("Sumber: WDPA Protected Planet + KLHK Kawasan Hutan")
+    st.caption(f"Sumber: WDPA Protected Planet — {prot.get('source', 'WDPA')}. "
+               "Catatan: kawasan hutan KLHK (HL/HP) belum termasuk; jarak ini batas bawah.")
 
 
 # ============================================================
@@ -847,12 +994,8 @@ with tab3:
         "sebagai alat pendukung keputusan (decision-support), bukan penentu legal."
     )
 
-    # Compute scores
-    if demo_key == "morowali":
-        result = mock_score_morowali()
-    else:
-        result = mock_score_reference()
-
+    # Real score from the satellite baseline (precomputed or live).
+    result = baseline["score"]
     total = result["total"]
     label = result["label"]
     color = result["color"]
@@ -882,6 +1025,17 @@ with tab3:
         """, unsafe_allow_html=True)
 
         st.markdown(f"**Interpretasi:** {driver_narrative(result)}")
+
+        if result.get("escalated"):
+            st.markdown(
+                f"<div class='info-box'>⚠️ <b>Eskalasi dampak terealisasi.</b> "
+                f"Skor tertimbang 5-faktor = {result['weighted_total']:.0f}, "
+                f"tetapi <b>{result.get('converted_pct', 0):.0f}% lahan sudah "
+                f"terkonversi</b> (built + bare). Skor akhir dinaikkan ke "
+                f"<b>{total:.0f}</b> karena dampak lingkungan sudah nyata, bukan "
+                f"sekadar potensi.</div>",
+                unsafe_allow_html=True,
+            )
 
     with col_radar:
         # Radar chart of sub-indices
@@ -973,87 +1127,87 @@ with tab3:
 with tab4:
     st.markdown("## Compliance Monitoring: Before vs After")
     st.markdown(
-        "Perbandingan kondisi tutupan lahan antara tahun baseline "
-        f"({BASELINE_YEAR}) dan tahun terkini ({CURRENT_YEAR}). Sistem "
-        "memproses citra Sentinel-2 secara near real-time (revisit 5 hari), "
-        "dengan cloud-masking untuk memastikan akurasi."
+        f"Perbandingan kondisi lingkungan antara tahun baseline ({yr_base}) dan "
+        f"terkini ({yr_cur}), seluruhnya dari citra Sentinel-2 & Dynamic World "
+        "(cloud-masked). Inilah 'leading indicator' yang melengkapi pelaporan "
+        "manual SIMPEL."
     )
 
-    # Before-after side-by-side
-    st.markdown(f"### Citra Satelit: {BASELINE_YEAR} vs {CURRENT_YEAR}")
+    # ============ REAL LAND-COVER BEFORE vs AFTER ============
+    st.markdown(f"### Komposisi Tutupan Lahan: {yr_base} vs {yr_cur}")
 
-    col_before, col_after = st.columns(2)
+    classes_show = ["Trees", "Built area", "Bare ground", "Shrub & Scrub",
+                    "Crops", "Water"]
+    rows = []
+    for cls in classes_show:
+        b = lc_base_get(baseline, cls)
+        c = lc_get(baseline, cls)
+        if max(b, c) >= 1.0:  # skip negligible classes
+            rows.append({"Kelas": cls, "Tahun": str(yr_base), "Persentase": round(b, 1)})
+            rows.append({"Kelas": cls, "Tahun": str(yr_cur), "Persentase": round(c, 1)})
+    df_ba = pd.DataFrame(rows)
 
-    with col_before:
-        st.markdown(f"#### Baseline ({BASELINE_YEAR})")
-        # Use Esri imagery via Folium as proxy for S2 composite
-        m_before = folium.Map(
-            location=[meta["center_lat"], meta["center_lon"]],
-            zoom_start=12, tiles=None,
+    col_ba, col_kpi = st.columns([2, 1])
+    with col_ba:
+        fig_ba = px.bar(
+            df_ba, x="Kelas", y="Persentase", color="Tahun", barmode="group",
+            color_discrete_map={str(yr_base): COLOR_ACCENT, str(yr_cur): COLOR_DANGER},
+            text="Persentase",
         )
-        folium.TileLayer(
-            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-            attr="Esri", name="Satellite",
-        ).add_to(m_before)
-        folium.GeoJson(
-            geom_geojson,
-            style_function=lambda x: {"color": "#FFD700", "weight": 2.5, "fillOpacity": 0.0},
-        ).add_to(m_before)
-        folium.Marker(
-            [meta["center_lat"], meta["center_lon"]],
-            tooltip=f"{BASELINE_YEAR}: Baseline",
-            icon=folium.Icon(color="green", icon="leaf"),
-        ).add_to(m_before)
-        st_folium(m_before, height=350, use_container_width=True, returned_objects=[])
-        if demo_key == "morowali":
-            st.info(f"**Tree Cover {BASELINE_YEAR}:** 50.8% | Area terbuka masih minimal")
-        else:
-            st.info(f"**Tree Cover {BASELINE_YEAR}:** 90.1% | Hutan intact")
+        fig_ba.update_traces(textposition="outside")
+        fig_ba.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10),
+                             xaxis_title="", yaxis_title="Persentase Area (%)",
+                             legend_title_text="Tahun")
+        apply_plot_style(fig_ba)
+        st.plotly_chart(fig_ba, use_container_width=True)
 
-    with col_after:
-        st.markdown(f"#### Kondisi Saat Ini ({CURRENT_YEAR})")
-        m_after = folium.Map(
-            location=[meta["center_lat"], meta["center_lon"]],
-            zoom_start=12, tiles=None,
-        )
-        folium.TileLayer(
-            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-            attr="Esri", name="Satellite",
-        ).add_to(m_after)
-        folium.GeoJson(
-            geom_geojson,
-            style_function=lambda x: {"color": "#FF2020", "weight": 2.5, "fillOpacity": 0.0},
-        ).add_to(m_after)
-        folium.Marker(
-            [meta["center_lat"], meta["center_lon"]],
-            tooltip=f"{CURRENT_YEAR}: Current",
-            icon=folium.Icon(color="red", icon="warning-sign"),
-        ).add_to(m_after)
-        st_folium(m_after, height=350, use_container_width=True, returned_objects=[])
-        if demo_key == "morowali":
-            st.error(f"**Tree Cover {CURRENT_YEAR}:** 38.5% | **Penurunan 12.3 poin dalam 6 tahun**")
-        else:
-            st.success(f"**Tree Cover {CURRENT_YEAR}:** 89.2% | **Stabil (-0.9 poin)**")
+    with col_kpi:
+        st.markdown("**Perubahan kunci**")
+        tree_delta = lc_delta(baseline, "Trees")
+        built_delta = lc_delta(baseline, "Built area")
+        st.metric(f"Tree Cover {yr_cur}", f"{lc_get(baseline, 'Trees'):.1f}%",
+                  fmt_delta_pp(tree_delta, yr_base))
+        st.metric(f"Built Area {yr_cur}", f"{lc_get(baseline, 'Built area'):.1f}%",
+                  fmt_delta_pp(built_delta, yr_base), delta_color="inverse")
+        tl = baseline.get("tree_loss", {})
+        if tl.get("loss_2018_2023_ha"):
+            st.metric("Hutan hilang 2018–2023 (buffer 1 km)",
+                      f"{tl['loss_2018_2023_ha']:.0f} ha")
+
+    # One real satellite context map (Esri current mosaic), honestly labelled.
+    st.caption(
+        "Peta konteks di bawah memakai Esri World Imagery (mozaik terkini). "
+        "Overlay RGB Sentinel-2 before/after live tersedia setelah service account "
+        "diberi izin tile Earth Engine (lihat catatan deploy)."
+    )
+    m_ctx = folium.Map(location=[meta["center_lat"], meta["center_lon"]],
+                       zoom_start=12, tiles=None)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri World Imagery", name="Satellite (terkini)",
+    ).add_to(m_ctx)
+    folium.GeoJson(
+        geom_geojson,
+        style_function=lambda x: {"color": "#FFD700", "weight": 2.5, "fillOpacity": 0.0},
+    ).add_to(m_ctx)
+    st_folium(m_ctx, height=320, use_container_width=True, returned_objects=[])
 
     st.markdown("---")
 
-    # ============ NDVI TIMESERIES ============
-    st.markdown("### Tren NDVI Tahunan")
-    st.caption("NDVI (Normalized Difference Vegetation Index) mengukur kerapatan vegetasi. "
-               "Nilai 0 menunjukkan lahan tidak bervegetasi, nilai 1 menunjukkan vegetasi sangat rapat.")
+    # ============ NDVI TIMESERIES (real) ============
+    st.markdown("### Tren NDVI Tahunan (Sentinel-2)")
+    st.caption("NDVI mengukur kerapatan vegetasi (0 = tak bervegetasi, 1 = sangat "
+               "rapat). Tahun tanpa citra valid (tertutup awan) dilewati, bukan "
+               "ditampilkan sebagai nol.")
 
-    years = list(range(2019, 2026))
-    if demo_key == "morowali":
-        ndvi_values = [0.72, 0.69, 0.64, 0.58, 0.53, 0.49, 0.47]
-    else:
-        ndvi_values = [0.82, 0.83, 0.81, 0.82, 0.80, 0.81, 0.82]
-
-    df_ndvi = pd.DataFrame({"Tahun": years, "NDVI Rata-rata": ndvi_values})
+    ndvi_series = baseline.get("ndvi", [])
+    years = [p["year"] for p in ndvi_series]
+    ndvi_values = [p["mean_ndvi"] for p in ndvi_series]  # may contain None
 
     fig_ndvi = go.Figure()
     fig_ndvi.add_trace(go.Scatter(
-        x=df_ndvi["Tahun"], y=df_ndvi["NDVI Rata-rata"],
-        mode="lines+markers", line=dict(color=COLOR_PRIMARY, width=3),
+        x=years, y=ndvi_values, mode="lines+markers", connectgaps=True,
+        line=dict(color=COLOR_PRIMARY, width=3),
         marker=dict(size=12, color=COLOR_ACCENT),
         fill="tozeroy", fillcolor="rgba(46, 117, 182, 0.15)",
     ))
@@ -1061,36 +1215,43 @@ with tab4:
         height=320, margin=dict(l=10, r=10, t=30, b=10),
         xaxis_title="Tahun", yaxis_title="NDVI (0 sampai 1)",
         yaxis=dict(range=[0, 1]),
-        title=f"NDVI Time Series ({years[0]} sampai {years[-1]})",
+        title=f"NDVI Time Series ({years[0]} sampai {years[-1]})" if years else "NDVI",
     )
     apply_plot_style(fig_ndvi)
     st.plotly_chart(fig_ndvi, use_container_width=True)
 
-    # ============ ALERT BOX ============
+    # ============ DYNAMIC ALERT from real deltas ============
     st.markdown("---")
-    if demo_key == "morowali":
-        change_pct = round((ndvi_values[0] - ndvi_values[-1]) / ndvi_values[0] * 100, 1)
+    valid = [(p["year"], p["mean_ndvi"]) for p in ndvi_series
+             if p.get("mean_ndvi") is not None]
+    ndvi_change_pct = None
+    if len(valid) >= 2 and valid[0][1]:
+        ndvi_change_pct = round((valid[0][1] - valid[-1][1]) / valid[0][1] * 100, 1)
+    tree_delta = lc_delta(baseline, "Trees")
+    alert = (tree_delta <= -10) or (ndvi_change_pct is not None and ndvi_change_pct >= 20)
+
+    if alert:
+        ndvi_line = (f"NDVI turun {ndvi_change_pct}% (dari {valid[0][1]:.2f} di "
+                     f"{valid[0][0]} ke {valid[-1][1]:.2f} di {valid[-1][0]}). "
+                     if ndvi_change_pct is not None else "")
         st.markdown(f"""
         <div class='alert-box'>
             <h4 style='color: {COLOR_DANGER}; margin-top: 0;'>
-                POTENTIAL LAND COVER CHANGE DETECTED
+                PERUBAHAN TUTUPAN LAHAN TERDETEKSI
             </h4>
-            <p><b>Perubahan NDVI:</b> Rata-rata NDVI menurun dari {ndvi_values[0]:.2f} 
-            ({years[0]}) menjadi {ndvi_values[-1]:.2f} ({years[-1]}), penurunan sebesar 
-            <b>{change_pct}%</b>.</p>
-            <p><b>Indikasi:</b> Pola penurunan konsisten selama 6 tahun mengindikasikan 
-            konversi tutupan hutan menjadi lahan terbuka atau built area.</p>
-            <p><b>Rekomendasi:</b> Sistem merekomendasikan verifikasi lapangan oleh 
-            Tim Pengawas Lingkungan Hidup (TPLH). Laporan dapat di-export untuk 
-            diintegrasikan dengan SIMPEL KLHK.</p>
+            <p><b>Tutupan hutan:</b> {fmt_delta_pp(tree_delta, yr_base)}
+            (kini {lc_get(baseline, 'Trees'):.1f}%). {ndvi_line}</p>
+            <p><b>Indikasi:</b> konversi tutupan hutan menjadi lahan terbuka / built area.</p>
+            <p><b>Rekomendasi:</b> verifikasi lapangan oleh Tim Pengawas Lingkungan
+            Hidup (TPLH). Laporan dapat di-export (tab 5) untuk SIMPEL KLHK.</p>
         </div>
         """, unsafe_allow_html=True)
     else:
-        st.success("""
-        **Tidak ada perubahan signifikan terdeteksi.** NDVI rata-rata stabil 
-        pada kisaran 0.80 sampai 0.83 selama 6 tahun observasi. Tutupan hutan 
-        di area ini terjaga dengan baik.
-        """)
+        st.success(
+            f"**Tidak ada perubahan signifikan terdeteksi.** Tutupan hutan "
+            f"{fmt_delta_pp(tree_delta, yr_base)} (kini {lc_get(baseline, 'Trees'):.1f}%); "
+            "NDVI relatif stabil. Area ini terjaga dengan baik."
+        )
 
 
 # ============================================================
@@ -1145,55 +1306,82 @@ with tab5:
         findings = []  # list of (severity_label, css_class, finding_text)
         inconsistency_count = 0
 
+        # Real values from the satellite baseline drive every verdict.
+        tree_cur = lc_get(baseline, "Trees")
+        tree_base = lc_base_get(baseline, "Trees")
+        water = baseline.get("water", {})
+        near_river = bool(water.get("near_river"))
+        nearest_m = water.get("nearest_water_m")
+        water_pct = water.get("water_within_polygon_pct", 0) or 0
+        prot = baseline.get("protected", {})
+        dist_km = prot.get("distance_km")
+        overlap = bool(prot.get("overlap"))
+        steep = baseline.get("slope", {}).get("steep_pct", 0) or 0
+        loss_ha = baseline.get("tree_loss", {}).get("loss_2018_2023_ha")
+
         # Check 1: "tidak ada tree cover" / "semak belukar"
-        if any(kw in claim_lower for kw in ["tidak ada tree", "semak belukar", "tidak ada hutan", "lahan terbuka"]):
-            if demo_key == "morowali":
+        if any(kw in claim_lower for kw in ["tidak ada tree", "semak belukar",
+                                            "tidak ada hutan", "lahan terbuka"]):
+            if max(tree_cur, tree_base) >= 25:
                 findings.append(("Inkonsistensi", "critical",
-                    "<strong>INKONSISTEN:</strong> Data Dynamic World pada baseline 2019 menunjukkan "
-                    "<strong>50.8% area terklasifikasi sebagai Tree Cover</strong>, jauh di atas definisi "
-                    "'semak belukar'. Pada 2025, tree cover turun menjadi 38.5% (masih signifikan)."))
-                findings.append(("Bukti Tambahan", "critical",
-                    "<strong>Bukti tambahan:</strong> Hansen Global Forest Change mencatat area ini memiliki "
-                    "canopy density >30% pada baseline 2000, konsisten dengan klasifikasi sebagai hutan sekunder."))
-                inconsistency_count += 2
-            else:
-                findings.append(("Inkonsistensi", "critical",
-                    "<strong>INKONSISTEN:</strong> Data Dynamic World menunjukkan 89.2% area adalah "
-                    "Tree Cover (hutan primer/sekunder), bukan semak belukar."))
-                inconsistency_count += 1
-
-        # Check 2: sungai permanen
-        if any(kw in claim_lower for kw in ["tidak ada sungai", "tidak dekat sungai", "jauh dari sungai"]):
-            if demo_key == "morowali":
-                findings.append(("Inkonsistensi", "critical",
-                    "<strong>INKONSISTEN:</strong> JRC Global Surface Water menunjukkan badan air permanen "
-                    "(occurrence >75%) berada dalam jarak &lt;500 m dari batas polygon. Klaim "
-                    "'tidak ada sungai permanen' tidak sesuai data satelit."))
-                inconsistency_count += 1
-            else:
-                findings.append(("Sebagian Konsisten", "warning",
-                    "<strong>SEBAGIAN KONSISTEN:</strong> Terdapat aliran air kecil namun bukan sungai utama "
-                    "dalam radius yang disebutkan."))
-
-        # Check 3: kawasan lindung
-        if any(kw in claim_lower for kw in ["tidak berada di dekat kawasan lindung", "jauh dari kawasan lindung"]):
-            if demo_key == "morowali":
-                findings.append(("Inkonsistensi", "critical",
-                    "<strong>INKONSISTEN:</strong> Kawasan lindung terdekat berada pada jarak 3.2 km. "
-                    "Dalam konteks pedoman AMDAL, jarak &lt;5 km umumnya dikategorikan 'dekat'."))
+                    f"<strong>INKONSISTEN:</strong> Dynamic World mencatat tree cover "
+                    f"<strong>{tree_base:.0f}% pada {yr_base}</strong> dan {tree_cur:.0f}% "
+                    f"pada {yr_cur} — jauh di atas definisi 'semak belukar'."))
+                if loss_ha:
+                    findings.append(("Bukti Tambahan", "critical",
+                        f"<strong>Bukti:</strong> Hansen Global Forest Change mencatat "
+                        f"<strong>{loss_ha:.0f} ha</strong> hutan hilang 2018–2023 di buffer "
+                        "1 km — konsisten dengan tutupan hutan yang signifikan."))
                 inconsistency_count += 1
             else:
                 findings.append(("Konsisten", "success",
-                    "<strong>KONSISTEN:</strong> Kawasan lindung terdekat berada 8.5 km, dapat dianggap 'tidak dekat'."))
+                    f"<strong>KONSISTEN:</strong> tree cover hanya {tree_cur:.0f}% "
+                    f"({yr_cur}); klaim area non-hutan wajar."))
+
+        # Check 2: sungai / badan air permanen
+        if any(kw in claim_lower for kw in ["tidak ada sungai", "tidak dekat sungai",
+                                            "jauh dari sungai"]):
+            if near_river or water_pct > 0.5:
+                loc = ("DI DALAM polygon" if (nearest_m is not None and nearest_m <= 1)
+                       else f"~{nearest_m:.0f} m dari polygon" if nearest_m is not None
+                       else "di sekitar polygon")
+                findings.append(("Inkonsistensi", "critical",
+                    f"<strong>INKONSISTEN:</strong> JRC Global Surface Water mendeteksi "
+                    f"badan air permanen (occurrence &gt;75%) {loc}."))
+                inconsistency_count += 1
+            else:
+                findings.append(("Konsisten", "success",
+                    "<strong>KONSISTEN:</strong> tidak ada badan air permanen dalam "
+                    "radius 2 km dari polygon."))
+
+        # Check 3: kawasan lindung
+        if any(kw in claim_lower for kw in ["tidak berada di dekat kawasan lindung",
+                                            "jauh dari kawasan lindung",
+                                            "tidak dekat kawasan lindung"]):
+            if overlap or (dist_km is not None and dist_km < 5):
+                d = "beririsan langsung" if overlap else f"hanya {dist_km:.1f} km"
+                findings.append(("Inkonsistensi", "critical",
+                    f"<strong>INKONSISTEN:</strong> kawasan lindung WDPA {d} dari polygon "
+                    "(&lt;5 km dikategorikan 'dekat' per pedoman AMDAL)."))
+                inconsistency_count += 1
+            else:
+                d = "&gt;30 km" if dist_km is None else f"{dist_km:.1f} km"
+                findings.append(("Konsisten", "success",
+                    f"<strong>KONSISTEN:</strong> kawasan lindung WDPA terdekat {d}, "
+                    "dapat dianggap 'tidak dekat'. Catatan: kawasan hutan KLHK belum termasuk."))
 
         # Check 4: topografi
-        if any(kw in claim_lower for kw in ["relatif datar", "tidak ada area curam", "topografi datar"]):
-            if demo_key == "morowali":
+        if any(kw in claim_lower for kw in ["relatif datar", "tidak ada area curam",
+                                            "topografi datar"]):
+            if steep >= 10:
                 findings.append(("Perlu Klarifikasi", "warning",
-                    "<strong>PERLU KLARIFIKASI:</strong> SRTM DEM menunjukkan 22.1% area memiliki kemiringan "
-                    ">30° (sangat curam per KLHK). Klaim 'tidak ada area curam' tidak akurat, "
-                    "meskipun kemiringan rata-rata memang moderat (18.3°)."))
+                    f"<strong>PERLU KLARIFIKASI:</strong> SRTM DEM menunjukkan {steep:.0f}% "
+                    "area memiliki kemiringan &gt;30° (sangat curam per KLHK)."))
                 inconsistency_count += 1
+            else:
+                findings.append(("Konsisten", "success",
+                    f"<strong>KONSISTEN:</strong> hanya {steep:.1f}% area curam (&gt;30°); "
+                    "topografi memang relatif datar."))
 
         if not findings:
             findings.append(("Tidak Terklasifikasi", "",
@@ -1219,30 +1407,67 @@ with tab5:
                 unsafe_allow_html=True,
             )
 
-        # Export option
+        # ============ EXPORT: real downloadable report ============
         st.markdown("---")
         st.markdown("### Export Laporan")
+
+        import re as _re
+        verdict = ("INKONSISTENSI SIGNIFIKAN" if inconsistency_count >= 2
+                   else "INKONSISTENSI TERDETEKSI" if inconsistency_count == 1
+                   else "KONSISTEN DENGAN DATA SATELIT")
+        plain = [(sev, _re.sub("<[^>]+>", "", txt).replace("&lt;", "<")
+                  .replace("&gt;", ">")) for sev, _cls, txt in findings]
+        report_md = "\n".join([
+            "# Laporan Verifikasi AMDALens",
+            f"\n**Area:** {meta.get('name', '-')}  ",
+            f"**Centroid:** {meta.get('center_lat')}, {meta.get('center_lon')}  ",
+            f"**Luas (satelit):** {area_km2:.1f} km²  " if area_km2 else "",
+            f"**Sumber data:** {data_source} | **Dihitung:** {baseline.get('computed_at','-')}",
+            f"\n## Skor Risiko Dampak Lingkungan: {total:.0f}/100 — {label}",
+            f"Skor tertimbang {result.get('weighted_total','-')}, "
+            f"dampak terealisasi {result.get('realized_impact','-')}.",
+            "Sub-indeks: " + ", ".join(f"{k} {v:.0f}" for k, v in sub.items()),
+            f"\n## Baseline Satelit ({yr_base} → {yr_cur})",
+            f"- Tree cover: {tree_base:.0f}% → {tree_cur:.0f}%",
+            f"- Built area: {lc_base_get(baseline,'Built area'):.0f}% → "
+            f"{lc_get(baseline,'Built area'):.0f}%",
+            f"- Area curam (>30°): {steep:.1f}%",
+            f"- Badan air dalam polygon: {water_pct:.2f}%; air permanen terdekat: "
+            + (f"{nearest_m:.0f} m" if nearest_m is not None else ">2 km"),
+            f"- Kawasan lindung WDPA: "
+            + ("beririsan" if overlap else f"{dist_km:.1f} km" if dist_km is not None
+               else ">30 km"),
+            (f"- Hutan hilang 2018–2023 (buffer 1 km): {loss_ha:.0f} ha"
+             if loss_ha else ""),
+            f"\n## Verifikasi Klaim\n> {claim}\n\n**Hasil:** {verdict} "
+            f"({inconsistency_count} temuan inkonsistensi)",
+            "\n".join(f"- **{sev}:** {txt}" for sev, txt in plain),
+            "\n---\n_AMDALens v0.2 (decision-support, bukan penentu legal). "
+            "Sumber: Sentinel-2, Dynamic World, Hansen GFC, SRTM, JRC GSW, WDPA._",
+        ])
+
         col1, col2, col3 = st.columns(3)
         col1.download_button(
-            label="Download laporan verifikasi (PDF)",
-            data="(Demo: laporan PDF akan digenerate di versi produksi)",
-            file_name="AMDALens_verification_report.pdf",
-            disabled=True,
-            help="Akan aktif di versi v0.2",
+            label="⬇ Download laporan (Markdown)",
+            data=report_md.encode("utf-8"),
+            file_name=f"AMDALens_verifikasi_{demo_key}.md",
+            mime="text/markdown",
+            use_container_width=True,
         )
-        col2.button("Kirim ke Amdalnet (API)", disabled=True,
-                    help="Integrasi API dengan Amdalnet direncanakan di Fase 5 roadmap")
+        col2.button("Kirim ke Amdalnet (API)", disabled=True, use_container_width=True,
+                    help="Integrasi API dengan Amdalnet — roadmap Fase 5")
         col3.button("Publikasikan ke Portal Publik", disabled=True,
-                    help="Opsional untuk transparansi publik")
+                    use_container_width=True,
+                    help="Portal transparansi publik — roadmap Fase 5")
 
 
 # ============ FOOTER ============
 st.markdown("---")
 st.markdown(f"""
 <div style='text-align: center; color: {COLOR_MUTED}; padding: 1rem; font-size: 0.85rem;'>
-    <b>AMDALens v0.1 MVP</b> | Indonesia Aerospace Hackathon 2026<br>
-    Dibangun dengan Google Earth Engine, Streamlit, Sentinel-2, Dynamic World, 
-    Hansen Global Forest Change, SRTM DEM, dan JRC Global Surface Water.<br>
+    <b>AMDALens v0.2 MVP</b> | Indonesia Aerospace Hackathon 2026<br>
+    Data satelit nyata via Google Earth Engine — Sentinel-2, Dynamic World,
+    Hansen Global Forest Change, SRTM DEM, JRC Global Surface Water, WDPA.<br>
     <i>Open data, open science, open government.</i>
 </div>
 """, unsafe_allow_html=True)

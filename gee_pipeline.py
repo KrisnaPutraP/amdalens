@@ -168,6 +168,55 @@ def get_water_distance_summary(geom: ee.Geometry) -> dict:
     }
 
 
+def get_river_proximity(geom: ee.Geometry, search_m: int = 2000) -> dict:
+    """
+    Jarak dari polygon ke badan air permanen terdekat (JRC, occurrence >75%),
+    dicari dalam buffer `search_m`. Dipakai sebagai proxy kerentanan hidrologi.
+    Returns: {nearest_water_m, near_river} (near_river = ada air permanen <500 m).
+    """
+    water = (
+        ee.Image(DATASETS["jrc_water"]).select("occurrence").gt(75).selfMask()
+    )
+    # cumulativeCost dari sumber air permanen: jarak geodesik ke air terdekat.
+    cost = ee.Image(1)
+    nearest = cost.cumulativeCost(
+        source=water.unmask(0).gt(0), maxDistance=search_m, geodeticDistance=True
+    )
+    stats = nearest.updateMask(nearest.gt(0)).reduceRegion(
+        reducer=ee.Reducer.min(), geometry=geom, scale=30, maxPixels=1e9,
+    ).getInfo()
+    nearest_m = stats.get("cumulative_cost") if stats else None
+    if nearest_m is None:
+        # Tidak ada air dalam jangkauan, atau seluruh polygon adalah air.
+        in_poly = water.reduceRegion(
+            ee.Reducer.count(), geom, 30, maxPixels=1e9
+        ).getInfo().get("occurrence", 0) or 0
+        near = in_poly > 0
+        return {"nearest_water_m": 0.0 if near else None, "near_river": bool(near)}
+    nearest_m = round(nearest_m, 1)
+    return {"nearest_water_m": nearest_m, "near_river": nearest_m <= 500}
+
+
+def get_protected_distance(geom: ee.Geometry, search_radius_m: int = 30000) -> dict:
+    """
+    Jarak (km) ke kawasan lindung terdekat dari WDPA, dicari dalam radius
+    `search_radius_m`. Returns: {distance_km, overlap, source}.
+    Defensif: jika tidak ada WDPA dalam radius, distance_km = None.
+    """
+    wdpa = ee.FeatureCollection(DATASETS["wdpa"])
+    overlap = wdpa.filterBounds(geom).size().getInfo() > 0
+    if overlap:
+        return {"distance_km": 0.0, "overlap": True, "source": "WDPA"}
+
+    region = geom.buffer(search_radius_m)
+    nearby = wdpa.filterBounds(region)
+    if nearby.size().getInfo() == 0:
+        return {"distance_km": None, "overlap": False,
+                "source": f"WDPA (tidak ada dalam {search_radius_m/1000:.0f} km)"}
+    dist_m = nearby.geometry().distance(geom, maxError=100).getInfo()
+    return {"distance_km": round(dist_m / 1000, 2), "overlap": False, "source": "WDPA"}
+
+
 def get_tree_loss_summary(geom: ee.Geometry) -> dict:
     """
     Hansen Global Forest Change: kehilangan tutupan hutan sejak 2000.
@@ -229,6 +278,11 @@ def get_ndvi_timeseries(geom: ee.Geometry, start_year: int = 2019,
             .map(mask_s2_clouds)
             .map(compute_ndvi)
         )
+        # Lewati tahun tanpa citra valid (mis. tertutup awan sepanjang tahun) agar
+        # tidak salah tampil sebagai NDVI = 0 (seolah vegetasi hilang total).
+        if coll.size().getInfo() == 0:
+            results.append({"year": y, "mean_ndvi": None})
+            continue
         mean_img = coll.mean().clip(geom)
         mean_val = mean_img.reduceRegion(
             reducer=ee.Reducer.mean(),
@@ -236,9 +290,10 @@ def get_ndvi_timeseries(geom: ee.Geometry, start_year: int = 2019,
             scale=30,
             maxPixels=1e9,
         ).getInfo()
+        v = mean_val.get("NDVI")
         results.append({
             "year": y,
-            "mean_ndvi": round(mean_val.get("NDVI", 0) or 0, 4),
+            "mean_ndvi": round(v, 4) if v is not None else None,
         })
     return results
 

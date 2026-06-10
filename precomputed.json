@@ -1,0 +1,251 @@
+{
+  "morowali": {
+    "key": "morowali",
+    "meta": {
+      "name": "Demo Polygon - Bahodopi, Morowali",
+      "province": "Sulawesi Tengah",
+      "district": "Kabupaten Morowali",
+      "subdistrict": "Kecamatan Bahodopi",
+      "proj_type_hypothesis": "Pertambangan Nikel (ilustrasi)",
+      "center_lat": -2.84,
+      "center_lon": 122.15,
+      "approx_area_km2": 30.0,
+      "note": "Polygon ilustratif untuk demo hackathon. Tidak mewakili konsesi perusahaan tertentu. Lokasi dipilih karena tutupan lahan di sekitar area telah terdokumentasi publik mengalami perubahan signifikan sejak 2015-2020."
+    },
+    "source": "precomputed",
+    "computed_at": "2026-06-10",
+    "year_baseline": 2019,
+    "year_current": 2025,
+    "area_km2": 48.3,
+    "landcover": {
+      "Built area": 49.85,
+      "Trees": 17.88,
+      "Bare ground": 14.72,
+      "Water": 13.23,
+      "Shrub & Scrub": 3.79,
+      "Crops": 0.28,
+      "Snow & Ice": 0.15,
+      "Grass": 0.04,
+      "Flooded vegetation": 0.04
+    },
+    "landcover_baseline": {
+      "Trees": 54.11,
+      "Built area": 18.74,
+      "Bare ground": 15.4,
+      "Water": 6.98,
+      "Shrub & Scrub": 3.53,
+      "Crops": 0.65,
+      "Grass": 0.56,
+      "Flooded vegetation": 0.02,
+      "Snow & Ice": 0.01
+    },
+    "slope": {
+      "mean_slope_deg": 10.85,
+      "max_slope_deg": 48.31,
+      "steep_pct": 1.03
+    },
+    "water": {
+      "water_within_polygon_pct": 5.923,
+      "nearest_water_m": 30.0,
+      "near_river": true
+    },
+    "tree_loss": {
+      "tree_cover_2000_ha": 5801.2,
+      "loss_2018_2023_ha": 1782.0,
+      "annual_loss_pct": 5.12
+    },
+    "protected": {
+      "distance_km": null,
+      "overlap": false,
+      "source": "WDPA (tidak ada dalam 30 km)"
+    },
+    "biodiversity": {
+      "score": 78,
+      "source": "Prior regional Wallacea (hotspot)"
+    },
+    "ndvi": [
+      {
+        "year": 2019,
+        "mean_ndvi": 0.385
+      },
+      {
+        "year": 2020,
+        "mean_ndvi": 0.3872
+      },
+      {
+        "year": 2021,
+        "mean_ndvi": 0.3446
+      },
+      {
+        "year": 2022,
+        "mean_ndvi": 0.2641
+      },
+      {
+        "year": 2023,
+        "mean_ndvi": 0.1988
+      },
+      {
+        "year": 2024,
+        "mean_ndvi": 0.2258
+      },
+      {
+        "year": 2025,
+        "mean_ndvi": 0.1705
+      }
+    ],
+    "subindices": {
+      "IPTH": 100,
+      "IKH": 97.4,
+      "ISR": 2.6,
+      "IKKL": 0.0,
+      "ISB": 78.0
+    },
+    "score": {
+      "total": 74.3,
+      "label": "KRITIS",
+      "color": "#B00020",
+      "status_text": "Risiko Tinggi",
+      "weighted_contributions": {
+        "IPTH": 30.0,
+        "IKH": 24.35,
+        "ISR": 0.52,
+        "IKKL": 0.0,
+        "ISB": 7.8
+      },
+      "sub_indices": {
+        "IPTH": 100,
+        "IKH": 97.4,
+        "ISR": 2.6,
+        "IKKL": 0.0,
+        "ISB": 78.0
+      },
+      "weighted_total": 62.7,
+      "realized_impact": 74.3,
+      "escalated": true,
+      "converted_pct": 64.6
+    }
+  },
+  "reference": {
+    "key": "reference",
+    "meta": {
+      "name": "Reference - Hutan Stabil Bahodopi Barat",
+      "province": "Sulawesi Tengah",
+      "district": "Kabupaten Morowali",
+      "subdistrict": "Kecamatan Bahodopi (barat)",
+      "proj_type_hypothesis": "Hutan stabil (benchmark risiko rendah)",
+      "center_lat": -2.842,
+      "center_lon": 122.076,
+      "approx_area_km2": 8.0,
+      "note": "Pembanding low-risk: hutan yang masih utuh ~8 km di barat kawasan industri nikel IMIP, masih dalam Kec. Bahodopi. Tutupan hutan stabil 2019-2025, topografi relatif datar, jauh dari air permanen dan kawasan lindung formal. Menunjukkan skor risiko AMDALens memang membedakan area aman dari area kritis, bukan selalu menilai tinggi."
+    },
+    "source": "precomputed",
+    "computed_at": "2026-06-10",
+    "year_baseline": 2019,
+    "year_current": 2025,
+    "area_km2": 10.4,
+    "landcover": {
+      "Trees": 88.52,
+      "Crops": 3.08,
+      "Bare ground": 3.05,
+      "Shrub & Scrub": 2.81,
+      "Water": 1.83,
+      "Built area": 0.63,
+      "Snow & Ice": 0.04,
+      "Grass": 0.03
+    },
+    "landcover_baseline": {
+      "Trees": 87.23,
+      "Crops": 7.5,
+      "Shrub & Scrub": 2.59,
+      "Bare ground": 2.14,
+      "Water": 0.3,
+      "Built area": 0.23,
+      "Grass": 0.01
+    },
+    "slope": {
+      "mean_slope_deg": 12.27,
+      "max_slope_deg": 38.1,
+      "steep_pct": 0.96
+    },
+    "water": {
+      "water_within_polygon_pct": 0.0,
+      "nearest_water_m": null,
+      "near_river": false
+    },
+    "tree_loss": {
+      "tree_cover_2000_ha": 2576.5,
+      "loss_2018_2023_ha": 250.19,
+      "annual_loss_pct": 1.62
+    },
+    "protected": {
+      "distance_km": null,
+      "overlap": false,
+      "source": "WDPA (tidak ada dalam 30 km)"
+    },
+    "biodiversity": {
+      "score": 68,
+      "source": "Prior regional Sulawesi (benchmark)"
+    },
+    "ndvi": [
+      {
+        "year": 2019,
+        "mean_ndvi": 0.6057
+      },
+      {
+        "year": 2020,
+        "mean_ndvi": 0.5996
+      },
+      {
+        "year": 2021,
+        "mean_ndvi": 0.6128
+      },
+      {
+        "year": 2022,
+        "mean_ndvi": 0.5921
+      },
+      {
+        "year": 2023,
+        "mean_ndvi": 0.4126
+      },
+      {
+        "year": 2024,
+        "mean_ndvi": null
+      },
+      {
+        "year": 2025,
+        "mean_ndvi": 0.5677
+      }
+    ],
+    "subindices": {
+      "IPTH": 10.8,
+      "IKH": 0.0,
+      "ISR": 2.4,
+      "IKKL": 0.0,
+      "ISB": 68.0
+    },
+    "score": {
+      "total": 10.8,
+      "label": "AMAN",
+      "color": "#2E7D32",
+      "status_text": "Risiko Rendah",
+      "weighted_contributions": {
+        "IPTH": 3.24,
+        "IKH": 0.0,
+        "ISR": 0.48,
+        "IKKL": 0.0,
+        "ISB": 6.8
+      },
+      "sub_indices": {
+        "IPTH": 10.8,
+        "IKH": 0.0,
+        "ISR": 2.4,
+        "IKKL": 0.0,
+        "ISB": 68.0
+      },
+      "weighted_total": 10.5,
+      "realized_impact": 10.8,
+      "escalated": false,
+      "converted_pct": 3.7
+    }
+  }
+}

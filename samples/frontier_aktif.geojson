@@ -1,0 +1,42 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Frontier Deforestasi Aktif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              122.03,
+              -2.782
+            ],
+            [
+              122.07,
+              -2.782
+            ],
+            [
+              122.072,
+              -2.818
+            ],
+            [
+              122.04,
+              -2.822
+            ],
+            [
+              122.028,
+              -2.804
+            ],
+            [
+              122.03,
+              -2.782
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

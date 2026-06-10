@@ -1,0 +1,42 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Hutan Stabil Bahodopi Barat"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              122.062,
+              -2.826
+            ],
+            [
+              122.09,
+              -2.828
+            ],
+            [
+              122.094,
+              -2.848
+            ],
+            [
+              122.072,
+              -2.858
+            ],
+            [
+              122.058,
+              -2.846
+            ],
+            [
+              122.062,
+              -2.826
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

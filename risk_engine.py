@@ -23,20 +23,27 @@ def score_ipth(annual_loss_pct: float) -> float:
     return (annual_loss_pct / 15.0) * 100
 
 
-def score_ikh(water_within_pct: float, near_river_flag: bool = False) -> float:
+def score_ikh(water_within_pct: float, nearest_water_m: float = None,
+              near_river_flag: bool = False) -> float:
     """
     IKH: Indeks Kerentanan Hidrologi.
-    Proxy sederhana: % badan air dalam polygon + flag kedekatan sungai.
-    Area dengan sungai permanen + rawan banjir tinggi = 100.
-
-    Untuk MVP, kami pakai aproksimasi: water_within_pct.
-    Di versi produksi akan ditambah layer sungai OSM dan zona banjir BNPB.
+    Gabungan dua sinyal nyata dari JRC Global Surface Water:
+      (a) badan air permanen DI DALAM polygon -> paparan banjir/limpasan langsung
+      (b) kedekatan ke air permanen / sungai / pesisir terdekat (meter)
+    Versi produksi menambah layer sungai OSM dan zona rawan banjir BNPB.
     """
-    # Base score dari water coverage
-    base = min(water_within_pct * 20, 80)  # 5% water = 100, capped at 80
-    if near_river_flag:
-        base = min(base + 20, 100)
-    return round(base, 2)
+    inside = min((water_within_pct or 0) * 8.0, 50.0)   # 6.25% air -> 50
+    if nearest_water_m is None:
+        prox = 25.0 if near_river_flag else 0.0
+    elif nearest_water_m <= 100:
+        prox = 50.0
+    elif nearest_water_m <= 500:
+        prox = 35.0
+    elif nearest_water_m <= 1500:
+        prox = 15.0
+    else:
+        prox = 0.0
+    return round(min(inside + prox, 100.0), 1)
 
 
 def score_isr(steep_pct: float) -> float:
@@ -74,17 +81,17 @@ def score_ikkl(distance_to_protected_km: float = None,
     return 0.0
 
 
-def score_isb(biodiversity_overlap_pct: float = None) -> float:
+def score_isb(biodiversity_overlap_pct: float = None,
+              regional_prior: float = 55.0) -> float:
     """
     ISB: Indeks Sensitivitas Biodiversitas.
     Overlap polygon dengan habitat spesies terancam (IUCN) atau KBA.
-    Untuk MVP: default proxy berdasarkan regional biodiversity priors.
-    Morowali area Sulawesi = high biodiversity baseline.
+    Untuk MVP: jika overlap belum dihitung, pakai prior regional (mis. Wallacea
+    = tinggi). Versi produksi memakai layer IUCN Red List dan KBA penuh.
     """
     if biodiversity_overlap_pct is not None:
         return min(biodiversity_overlap_pct * 2, 100)  # 50% overlap = 100
-    # Fallback: medium-high for tropical Indonesia areas
-    return 55.0
+    return float(regional_prior)
 
 
 def compute_total_score(sub_indices: dict) -> dict:
@@ -148,32 +155,101 @@ def driver_narrative(result: dict) -> str:
     )
 
 
-# ============ MOCK MODE untuk demo tanpa GEE ============
-def mock_score_morowali() -> dict:
-    """
-    Mock sub-indices yang dirancang untuk menghasilkan KRITIS pada demo Morowali.
-    Digunakan jika GEE tidak tersedia atau untuk smoke-testing UI.
-    Angka-angka ini berdasarkan estimasi kualitatif dari literatur publik
-    tentang Bahodopi yaitu area dengan perubahan tutupan lahan signifikan.
-    Target: skor total sekitar 78 (KRITIS), konsisten dengan skenario proposal.
-    """
-    sub = {
-        "IPTH": 88,   # area dengan deforestasi tinggi (bobot 0.30)
-        "IKH":  72,   # dekat sungai permanen, rawan banjir (bobot 0.25)
-        "ISR":  62,   # 22% area curam >30 derajat (bobot 0.20)
-        "IKKL": 78,   # 3.2 km ke kawasan lindung, kategori dekat (bobot 0.15)
-        "ISB":  80,   # Sulawesi Wallacea biodiversity hotspot (bobot 0.10)
-    }
-    return compute_total_score(sub)
+# ============ IPTH v2: gabung laju-loss + tingkat konversi ============
+def converted_pct(landcover: dict) -> float:
+    """% lahan terkonversi/terbuka (Built area + Bare ground) dari klasifikasi DW."""
+    return float((landcover or {}).get("Built area", 0)
+                 + (landcover or {}).get("Bare ground", 0))
 
 
-def mock_score_reference() -> dict:
-    """Mock low-risk reference area for comparison."""
+def score_ipth_v2(annual_loss_pct: float, converted_land_pct: float) -> float:
+    """
+    IPTH (Indeks Perubahan Tutupan Hutan) versi terkalibrasi.
+
+    Mengukur degradasi tutupan hutan dari DUA sisi, lalu diambil maksimum:
+      - laju kehilangan terbaru (Hansen/NDVI): 15%/th -> 100
+      - tingkat konversi saat ini (built+bare):  60% -> 100
+
+    Rasional: risiko tutupan hutan tetap tinggi baik ketika lahan SEDANG
+    ditebang cepat MAUPUN ketika sudah TERLANJUR dikonversi total. Tanpa
+    komponen kedua, situs yang sudah jadi kawasan industri (loss-rate kecil
+    karena hutannya sudah habis) keliru terbaca berisiko rendah.
+    """
+    loss_component = score_ipth(annual_loss_pct)              # 15%/th -> 100
+    conv_component = min(converted_land_pct / 60.0 * 100, 100)  # 60% -> 100
+    return round(max(loss_component, conv_component), 1)
+
+
+def realized_impact_score(converted_land_pct: float,
+                          annual_loss_pct: float) -> float:
+    """
+    Skor 'dampak terealisasi': kerusakan lingkungan yang SUDAH terjadi, dari
+    konversi lahan permanen (built+bare) dan/atau laju kehilangan hutan terbaru.
+    Diambil maksimum dari keduanya.
+
+    Tujuannya menjamin situs yang sudah rusak parah (mis. kawasan industri yang
+    dulunya hutan) tidak ter-dilusi menjadi 'risiko menengah' hanya karena
+    faktor lokasi (lereng landai, jauh dari kawasan lindung formal) kebetulan
+    rendah. Skor akhir = max(skor tertimbang, skor dampak terealisasi).
+    """
+    conv = min((converted_land_pct or 0) * 1.15, 100.0)  # ~87% terkonversi -> 100
+    loss = score_ipth(annual_loss_pct or 0)              # 15%/th -> 100
+    return round(max(conv, loss), 1)
+
+
+def score_from_baseline(baseline: dict) -> dict:
+    """
+    Hitung skor risiko dari baseline satelit NYATA (hasil precompute / GEE live).
+
+    `baseline` mengikuti skema dari data_provider.get_baseline():
+        landcover {kelas: %}, slope, water, tree_loss, protected, biodiversity.
+
+    Skor akhir = max(skor tertimbang 5-faktor, skor dampak terealisasi), agar
+    mencerminkan kerentanan lokasi MAUPUN kerusakan yang sudah nyata.
+    """
+    lc = baseline.get("landcover", {})
+    slope = baseline.get("slope", {})
+    water = baseline.get("water", {})
+    tl = baseline.get("tree_loss", {})
+    prot = baseline.get("protected", {})
+    bio = baseline.get("biodiversity", {})
+
+    # IKKL: bedakan "data tidak tersedia" (default medium) vs "tidak ada dalam
+    # jangkauan" (risiko rendah / jauh).
+    dist = prot.get("distance_km")
+    if dist is None and "tidak ada" in str(prot.get("source", "")).lower():
+        dist = 30.0
+
+    conv = converted_pct(lc)
+    annual_loss = tl.get("annual_loss_pct", 0) or 0
     sub = {
-        "IPTH": 10,
-        "IKH":  20,
-        "ISR":  25,
-        "IKKL": 30,
-        "ISB":  55,
+        "IPTH": score_ipth_v2(annual_loss, conv),
+        "IKH":  score_ikh(water.get("water_within_polygon_pct", 0) or 0,
+                          nearest_water_m=water.get("nearest_water_m"),
+                          near_river_flag=bool(water.get("near_river", False))),
+        "ISR":  score_isr(slope.get("steep_pct", 0) or 0),
+        "IKKL": score_ikkl(distance_to_protected_km=dist,
+                           overlap_with_protected=bool(prot.get("overlap", False))),
+        "ISB":  score_isb(regional_prior=float(bio.get("score", 55))),
     }
-    return compute_total_score(sub)
+    sub = {k: round(v, 1) for k, v in sub.items()}
+
+    result = compute_total_score(sub)             # skor tertimbang 5-faktor
+    weighted_total = result["total"]
+    realized = realized_impact_score(conv, annual_loss)
+    final = round(max(weighted_total, realized), 1)
+    label, color, status_text = classify_risk(final)
+
+    result.update({
+        "total": final,
+        "label": label,
+        "color": color,
+        "status_text": status_text,
+        "weighted_total": weighted_total,
+        "realized_impact": realized,
+        # Only flag escalation when realized impact is MEANINGFULLY higher than
+        # the weighted score (avoids a noisy note when the two nearly tie).
+        "escalated": realized > weighted_total + 5.0,
+        "converted_pct": round(conv, 1),
+    })
+    return result
