@@ -47,10 +47,13 @@ def apply_plot_style(fig):
         paper_bgcolor=SURFACE,
         plot_bgcolor=SURFACE,
         font=dict(color=TEXT_COLOR, family="Arial, sans-serif"),
-        title_font=dict(color=TEXT_COLOR),
         xaxis=axis_style,
         yaxis=axis_style,
     )
+    # Color the figure title ONLY when one is actually set; otherwise Plotly
+    # renders the literal string "undefined" where the title would go.
+    if fig.layout.title and fig.layout.title.text:
+        fig.update_layout(title_font=dict(color=TEXT_COLOR))
     return fig
 
 
