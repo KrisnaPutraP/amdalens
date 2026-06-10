@@ -194,7 +194,6 @@ st.markdown(f"""
     [data-testid="stStatusWidget"],
     [data-testid="manage-app-button"],
     [data-testid="stDeployButton"],
-    [data-testid="baseButton-headerNoPadding"],
     a[href*="share.streamlit.io"],
     button[title="View app source"],
     button[title="Edit app"],
@@ -222,6 +221,26 @@ st.markdown(f"""
     [data-testid="stDecoration"] {{
         background: linear-gradient(90deg, #B00020 0%, #1F4E79 50%, #C77700 100%) !important;
         height: 3px !important;
+    }}
+
+    /* Sidebar collapse / expand chevron: keep it dark & visible (was light-on-light) */
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"] {{
+        visibility: visible !important;
+        opacity: 1 !important;
+    }}
+
+    [data-testid="stSidebarCollapseButton"] svg,
+    [data-testid="stSidebarCollapseButton"] button,
+    [data-testid="stSidebarCollapsedControl"] svg,
+    [data-testid="collapsedControl"] svg,
+    [data-testid="stSidebarHeader"] svg,
+    [data-testid="stSidebar"] button[kind="header"] svg {{
+        color: {COLOR_PRIMARY} !important;
+        fill: {COLOR_PRIMARY} !important;
+        stroke: {COLOR_PRIMARY} !important;
+        opacity: 1 !important;
     }}
 
     .main .block-container {{
