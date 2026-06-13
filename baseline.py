@@ -48,7 +48,7 @@ def _safe(label, fn, default, log=None):
 def build_baseline(key: str, geom: "ee.Geometry", meta: dict = None,
                    source: str = "live", log=None) -> dict:
     """Run the full pipeline for `geom` and return the baseline+score dict."""
-    meta = meta or {}
+    meta = dict(meta or {})
     lc_cur = named_landcover(_safe(
         f"landcover {CURRENT_YEAR}",
         lambda: gp.get_landcover_summary(geom, CURRENT_YEAR), {}, log))
@@ -69,6 +69,16 @@ def build_baseline(key: str, geom: "ee.Geometry", meta: dict = None,
     area_km2 = _safe("area",
                      lambda: round(geom.area(1).divide(1e6).getInfo(), 1),
                      meta.get("approx_area_km2"), log)
+
+    # For uploaded polygons (admin fields blank), resolve province & district
+    # from satellite admin boundaries (FAO GAUL). Demo polygons already have them.
+    if str(meta.get("province", "")).strip() in ("", "—", "-", "None"):
+        adm = _safe("admin region", lambda: gp.get_admin_region(geom),
+                    {"province": None, "district": None}, log)
+        if adm.get("province"):
+            meta["province"] = adm["province"]
+        if adm.get("district"):
+            meta["district"] = adm["district"]
 
     baseline = {
         "key": key,

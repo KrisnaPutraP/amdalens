@@ -217,6 +217,19 @@ def get_protected_distance(geom: ee.Geometry, search_radius_m: int = 30000) -> d
     return {"distance_km": round(dist_m / 1000, 2), "overlap": False, "source": "WDPA"}
 
 
+def get_admin_region(geom: ee.Geometry) -> dict:
+    """
+    Provinsi & kabupaten/kota dari centroid polygon via FAO GAUL 2015 level 2.
+    (Kecamatan/level-3 tidak tersedia di GAUL.) Returns {province, district}.
+    """
+    pt = geom.centroid(maxError=1)
+    fc = ee.FeatureCollection("FAO/GAUL/2015/level2").filterBounds(pt)
+    if fc.size().getInfo() == 0:
+        return {"province": None, "district": None}
+    d = fc.first().toDictionary(["ADM1_NAME", "ADM2_NAME"]).getInfo()
+    return {"province": d.get("ADM1_NAME"), "district": d.get("ADM2_NAME")}
+
+
 def get_tree_loss_summary(geom: ee.Geometry) -> dict:
     """
     Hansen Global Forest Change: kehilangan tutupan hutan sejak 2000.
