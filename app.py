@@ -579,6 +579,30 @@ st.markdown(f"""
         border-radius: 8px !important;
     }}
 
+    /* File uploader dropzone: was dark-on-dark (invisible text) */
+    [data-testid="stFileUploaderDropzone"] {{
+        background: var(--amdalens-surface-alt) !important;
+        border: 1px dashed var(--amdalens-border) !important;
+    }}
+    [data-testid="stFileUploaderDropzone"] *,
+    [data-testid="stFileUploaderDropzoneInstructions"],
+    [data-testid="stFileUploaderDropzoneInstructions"] *,
+    [data-testid="stFileUploader"] label,
+    [data-testid="stFileUploader"] small {{
+        color: var(--amdalens-text) !important;
+        fill: var(--amdalens-text) !important;
+    }}
+    [data-testid="stFileUploaderDropzone"] button,
+    [data-testid="stFileUploader"] button {{
+        background: var(--amdalens-surface) !important;
+        color: var(--amdalens-text) !important;
+        border: 1px solid var(--amdalens-border) !important;
+    }}
+    [data-testid="stFileUploaderFile"],
+    [data-testid="stFileUploaderFile"] * {{
+        color: var(--amdalens-text) !important;
+    }}
+
     label,
     [data-testid="stWidgetLabel"] p {{
         color: var(--amdalens-text) !important;
